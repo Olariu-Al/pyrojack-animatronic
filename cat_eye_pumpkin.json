@@ -1,0 +1,18 @@
+{
+    "fileFormatVersion": "1",
+    "parameterSets": {
+        "New set 1": {
+            "EPS": "0.01",
+            "anim_t": "-1",
+            "base_part": "shell",
+            "check_g": "9",
+            "head_wobble": "0",
+            "part": "sector_gear",
+            "quality": "draft",
+            "render_mode": "assembly",
+            "shell_alpha": "0.28000000000000003",
+            "show_reserved_bays": "true",
+            "show_shell": "false"
+        }
+    }
+}
