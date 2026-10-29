@@ -28,21 +28,22 @@ Arduino_GFX *gfx = new Arduino_GC9A01(bus, LCD_RST, 0 /*rotation*/, LCD_IPS);
 // ---------------- servo + buzzer pins ----------------
 #if defined(ESP8266)
   #include <Servo.h>
-  const int PIN_MG995 = 12;  // D6
+  const int PIN_MG996R = 12;  // D6
   const int PIN_MG90S = 2;   // D4  (also the on-board LED - it will flicker, that's fine)
   const int PIN_BUZZ  = 16;  // D0
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
   #include <ESP32Servo.h>
-  const int PIN_MG995 = 17, PIN_MG90S = 18, PIN_BUZZ = 40;
+  const int PIN_MG996R = 17, PIN_MG90S = 18, PIN_BUZZ = 40;
 #else
   // ESP32 DevKit
   #include <ESP32Servo.h>
-  const int PIN_MG995 = 26, PIN_MG90S = 27, PIN_BUZZ = 25;
+  const int PIN_MG996R = 26, PIN_MG90S = 27, PIN_BUZZ = 25;
 #endif
 
 // ---------------- calibration (from the helper sketch) ----------------
-const bool  REVERSED = false;   // MG995 direction
-const float TRIM     = 0;       // MG995 zero trim, degrees
+const bool  REVERSED = false;   // MG996R direction
+const float TRIM     = 0;       // MG996R zero trim, degrees
+const int   CK_MIN_US = 500, CK_MAX_US = 2500;   // MG996R pulse at 0 / 180 deg - narrow it if the servo buzzes at an end
 const int   LOCK_DEG = 45;      // MG90S deadbolt locked
 const int   OPEN_DEG = 135;     // MG90S deadbolt open
 
@@ -56,8 +57,8 @@ void cockWrite(float logical) {
   float s = logical + TRIM;
   if (REVERSED) s = 180 - s;
   s = constrain(s, 0.0f, 180.0f);
-  if (!cock.attached()) cock.attach(PIN_MG995, 500, 2500);
-  cock.writeMicroseconds(500 + (int)(s * 2000.0f / 180.0f));
+  if (!cock.attached()) cock.attach(PIN_MG996R, CK_MIN_US, CK_MAX_US);
+  cock.writeMicroseconds(CK_MIN_US + (int)(s * (CK_MAX_US - CK_MIN_US) / 180.0f));
   cockPos = logical;
 }
 void latchWrite(int deg) {
@@ -73,58 +74,93 @@ void servoInit() {
 }
 
 // ---------------- fire cat-eye graphics ----------------
-const int CX = 120, CY = 120;       // screen centre
-const int EYE_HH = 45;              // half height of the almond
-float halfW[2 * EYE_HH + 1];        // almond half-width per row
-const float SHEAR = -0.32f;         // slants the eye (about 18 deg)
+// The outline is the face cut-out from cat_eye_pumpkin.scad (almond_2d): a 31 x 13.5 mm two-arc almond with the
+// angry hood, tilted 18 deg, centred on the LCD and scaled to its 32.4 mm active area. A flame burns in the pupil.
+const int   EYE_SIDE = 1;                 // 1 = eye on the viewer's right, -1 = viewer's left (mirrored)
+const float PX_MM    = 240 / 32.4f;       // screen pixels per mm
+const float EYE_L    = 31 * PX_MM, EYE_H = 13.5f * PX_MM;
+const float EYE_R    = EYE_H / 4 + EYE_L * EYE_L / (4 * EYE_H), EYE_D = EYE_R - EYE_H / 2;
+const float TILT_C   = cosf(18 * DEG_TO_RAD), TILT_S = sinf(18 * DEG_TO_RAD);
+const float HOOD_M   = (0.5f * EYE_H) / (0.8f * EYE_L);    // upper lid: nasal corner (-L/2, 0) -> (0.3 L, H/2)
+const float HOOD_K   = 1 / sqrtf(1 + HOOD_M * HOOD_M);
+const float GROW     = 5;                 // draw a bit past the cut-out so the bezel hides any misalignment
+const float FLAME_X  = 16, FLAME_BASE = -60, HALO = 7;     // flame position (px from centre) and its dark rim
+
+int16_t spanX0[240], spanX1[240];         // eye pixels on each row (empty when x1 < x0)
+uint16_t palette[64];                     // heat 0..1 -> colour
+float sinLut[256];
+uint16_t line[240];
 
 uint16_t rgb(int r, int g, int b) {
   r = constrain(r, 0, 255); g = constrain(g, 0, 255); b = constrain(b, 0, 255);
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
 }
 
-void buildEye() {                   // two circles -> sharp almond
-  const float L = 200, H = 2 * EYE_HH;
-  const float R = H / 4 + L * L / (4 * H), d = R - H / 2;
-  for (int y = -EYE_HH; y <= EYE_HH; y++) {
-    float t = R * R - (fabsf(y) + d) * (fabsf(y) + d);
-    halfW[y + EYE_HH] = t > 0 ? sqrtf(t) : 0;
+inline float fsin(float a) { return sinLut[(int)(a * 40.743665f) & 255]; }   // 256-step sine, a in radians
+
+// signed distance to the eye outline in pixels, positive inside. X right, Y up, from the screen centre.
+float eyeDist(float X, float Y) {
+  X *= EYE_SIDE;
+  float x = X * TILT_C + Y * TILT_S, y = Y * TILT_C - X * TILT_S;   // undo the tilt
+  float lower = EYE_R - sqrtf(x * x + (y - EYE_D) * (y - EYE_D));
+  float upper = EYE_R - sqrtf(x * x + (y + EYE_D) * (y + EYE_D));
+  float hood  = (HOOD_M * (x + EYE_L / 2) - y) * HOOD_K;
+  return fminf(fminf(lower, upper), hood);
+}
+
+void buildEye() {
+  for (int i = 0; i < 256; i++) sinLut[i] = sinf(i * TWO_PI / 256);
+  // black -> deep red -> red -> orange -> yellow -> near white
+  const float key[][4] = { { 0, 0, 0, 0 }, { 0.25f, 120, 0, 0 }, { 0.5f, 220, 30, 0 }, { 0.72f, 255, 120, 0 }, { 0.88f, 255, 210, 40 }, { 1, 255, 250, 190 } };
+  for (int i = 0; i < 64; i++) {
+    float h = i / 63.0f; int k = 0;
+    while (h > key[k + 1][0]) k++;
+    float f = (h - key[k][0]) / (key[k + 1][0] - key[k][0]);
+    palette[i] = rgb(key[k][1] + f * (key[k + 1][1] - key[k][1]), key[k][2] + f * (key[k + 1][2] - key[k][2]), key[k][3] + f * (key[k + 1][3] - key[k][3]));
+  }
+  for (int py = 0; py < 240; py++) {
+    spanX0[py] = 240; spanX1[py] = -1;
+    for (int px = 0; px < 240; px++)
+      if (eyeDist(px - 119.5f, 119.5f - py) > -GROW) { if (px < spanX0[py]) spanX0[py] = px; spanX1[py] = px; }
   }
 }
 
-// one flame segment from the pupil outward: yellow -> orange -> red
-void flameSegment(int xInner, int xOuter, int y, float bright) {
-  int dir = xOuter > xInner ? 1 : -1;
-  int len = abs(xOuter - xInner);
-  if (len <= 0) return;
-  int a = len * random(20, 40) / 100;
-  int b = len * random(30, 45) / 100;
-  int c = len - a - b;
-  float f = bright * random(70, 101) / 100.0f;
-  int x = xInner;
-  gfx->drawFastHLine(dir > 0 ? x : x - a + 1, y, a, rgb(255 * f, 220 * f, 70 * f)); x += dir * a;
-  gfx->drawFastHLine(dir > 0 ? x : x - b + 1, y, b, rgb(255 * f, 110 * f, 0));     x += dir * b;
-  gfx->drawFastHLine(dir > 0 ? x : x - c + 1, y, c, rgb(190 * f, 15 * f, 0));
-}
-
-// bright: 0..1, pupil: max half-width of the vertical slit in pixels
-void drawEye(float bright, float pupil) {
-  for (int y = -EYE_HH; y <= EYE_HH; y++) {
-    float w = halfW[y + EYE_HH];
-    if (w < 1) continue;
-    int sy = CY + y;
-    int cx = CX + (int)(SHEAR * y);
-    float k = 1.0f - (float)(y * y) / (EYE_HH * EYE_HH);
-    int p = (int)(pupil * sqrtf(k > 0 ? k : 0)) + 1;
-    gfx->drawFastHLine(cx - p, sy, 2 * p, 0x0000);       // black slit pupil
-    flameSegment(cx - p - 1, cx - (int)w, sy, bright);
-    flameSegment(cx + p, cx + (int)w, sy, bright);
+// t: seconds, power: 0 = smouldering ember, 1 = full blaze
+void drawEye(float t, float power) {
+  float hf  = (90 + 60 * power) * (0.92f + 0.08f * fsin(t * 13) * fsin(t * 7.3f));   // flame height, flickering
+  float wf  = 22 + 16 * power;              // flame width
+  float amp = 10 + 12 * power;              // sideways lick of the tip
+  static float ts = 0, lastT = t;           // animation phase, sped up smoothly by power
+  ts += (t - lastT) * (1 + 0.8f * power); lastT = t;
+  float hot = 0.95f + 0.45f * power;        // iris heat
+  for (int py = 0; py < 240; py++) {
+    int x0 = spanX0[py], x1 = spanX1[py];
+    if (x1 < x0) continue;
+    float Y = 119.5f - py;
+    float v = (Y - FLAME_BASE) / hf;        // 0 at the flame base, 1 at its tip
+    float wob = amp * v * v * (0.6f * fsin(Y * 0.035f - ts * 1.9f) + 0.4f * fsin(Y * 0.08f - ts * 3.7f));
+    float w = (v > 0 && v < 1) ? wf * 1.7f * sqrtf(v) * (1 - v) * (1 + 0.18f * fsin(Y * 0.11f - ts * 7)) : 0;
+    float rowN = 1.6f * fsin(Y * 0.045f - ts * 2.2f);
+    for (int px = x0; px <= x1; px++) {
+      float Xs = px - 119.5f, X = Xs * EYE_SIDE;
+      float rim = constrain(eyeDist(Xs, Y) / 28, 0.0f, 1.0f);   // darker towards the lids
+      float n = 0.5f + 0.25f * fsin(X * 0.07f + rowN) + 0.25f * fsin(Y * 0.09f - ts * 5.1f + X * 0.03f);
+      float heat = hot * (0.12f + 0.5f * n * n) * (0.35f + 0.65f * rim);    // rising embers in the iris
+      if (w > 0) {
+        float dd = fabsf(X - FLAME_X - wob) - w;                            // < 0 inside the flame
+        if (dd < 0) heat = (0.62f + 0.38f * sqrtf(-dd / w)) * (1 - 0.3f * v) * (0.85f + 0.15f * power);
+        else if (dd < HALO) heat *= 0.2f + 0.8f * dd / HALO;                // dark slit around the flame
+      }
+      line[px] = palette[(int)(constrain(heat, 0.0f, 1.0f) * 63)];
+    }
+    gfx->draw16bitRGBBitmap(x0, py, line + x0, x1 - x0 + 1, 1);
   }
 }
 
 const uint32_t CYCLE_MS = 10000;
+float power = 0;
 
-// non-blocking MG995 stepping, so the eye keeps animating
+// non-blocking MG996R stepping, so the eye keeps animating
 float cockTarget = 0; int stepMs = 8; uint32_t lastStep = 0;
 void cockGo(float target, int msPerDeg) { cockTarget = target; stepMs = msPerDeg; }
 bool cockStep(uint32_t now) {
@@ -196,7 +232,6 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   runCycle(now);
-  bool blaze = (phase == FIRE);
-  float bright = blaze ? 1.0f : 0.35f + 0.08f * sinf(now / 300.0f);
-  drawEye(bright, blaze ? 4.0f : 13.0f);
+  power += ((phase == FIRE ? 1.0f : 0.0f) - power) * 0.2f;   // flame blazes while the plunger fires
+  drawEye(now / 1000.0f, power);
 }

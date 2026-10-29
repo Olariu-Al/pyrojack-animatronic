@@ -1,4 +1,4 @@
-// TEST 2 - SERVOS ONLY: MG995 sweep, MG90S lock/open, then the scare motion, repeating every 15 s
+// TEST 2 - SERVOS ONLY: MG996R sweep, MG90S lock/open, then the scare motion, repeating every 15 s
 // Run this with the servo horns OFF, or before the plunger is fitted:
 // the 0 -> 180 sweep would release the plunger and fire the flame.
 // Works on ESP32 DevKit (ESP32-WROOM-32, board "ESP32 Dev Module"), ESP8266 (NodeMCU) and ESP32-S3 -
@@ -8,21 +8,22 @@
 // ---------------- servo + buzzer pins ----------------
 #if defined(ESP8266)
   #include <Servo.h>
-  const int PIN_MG995 = 12;  // D6
+  const int PIN_MG996R = 12;  // D6
   const int PIN_MG90S = 2;   // D4  (also the on-board LED - it will flicker, that's fine)
   const int PIN_BUZZ  = 16;  // D0
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
   #include <ESP32Servo.h>
-  const int PIN_MG995 = 17, PIN_MG90S = 18, PIN_BUZZ = 40;
+  const int PIN_MG996R = 17, PIN_MG90S = 18, PIN_BUZZ = 40;
 #else
   // ESP32 DevKit
   #include <ESP32Servo.h>
-  const int PIN_MG995 = 26, PIN_MG90S = 27, PIN_BUZZ = 25;
+  const int PIN_MG996R = 26, PIN_MG90S = 27, PIN_BUZZ = 25;
 #endif
 
 // ---------------- calibration (from the helper sketch) ----------------
-const bool  REVERSED = false;   // MG995 direction
-const float TRIM     = 0;       // MG995 zero trim, degrees
+const bool  REVERSED = false;   // MG996R direction
+const float TRIM     = 0;       // MG996R zero trim, degrees
+const int   CK_MIN_US = 500, CK_MAX_US = 2500;   // MG996R pulse at 0 / 180 deg - narrow it if the servo buzzes at an end
 const int   LOCK_DEG = 45;      // MG90S deadbolt locked
 const int   OPEN_DEG = 135;     // MG90S deadbolt open
 
@@ -33,8 +34,8 @@ void cockWrite(float logical) {
   float s = logical + TRIM;
   if (REVERSED) s = 180 - s;
   s = constrain(s, 0.0f, 180.0f);
-  if (!cock.attached()) cock.attach(PIN_MG995, 500, 2500);
-  cock.writeMicroseconds(500 + (int)(s * 2000.0f / 180.0f));
+  if (!cock.attached()) cock.attach(PIN_MG996R, CK_MIN_US, CK_MAX_US);
+  cock.writeMicroseconds(CK_MIN_US + (int)(s * (CK_MAX_US - CK_MIN_US) / 180.0f));
   cockPos = logical;
 }
 void latchWrite(int deg) {
@@ -71,7 +72,7 @@ void setup() {
 void loop() {
   uint32_t start = millis();
 
-  Serial.println("1) MG995 full sweep 0 -> 180 -> 0");
+  Serial.println("1) MG996R full sweep 0 -> 180 -> 0");
   sweepCock(180, 10); delay(500);
   sweepCock(0, 5);    delay(500);
   cock.detach();
