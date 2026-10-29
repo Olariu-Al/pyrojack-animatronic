@@ -1,5 +1,6 @@
 // TEST 1 - LCD ONLY: colour check, then the fire cat-eye (ember 5 s / blaze 3 s, repeating)
-// Works on ESP8266 (ESP-12E / NodeMCU) and ESP32-S3 - just pick the board in Tools > Board.
+// Works on ESP32 DevKit (ESP32-WROOM-32, board "ESP32 Dev Module"), ESP8266 (NodeMCU) and ESP32-S3 -
+// just pick the board in Tools > Board.
 // Library: "GFX Library for Arduino" by moononournation (if the ESP8266 build fails, install version 1.4.9).
 
 #include <Arduino_GFX_Library.h>
@@ -11,9 +12,13 @@
   const int LCD_CS = 15;   // D8
   const int LCD_RST = 5;   // D1
   Arduino_DataBus *bus = new Arduino_ESP8266SPI(LCD_DC, LCD_CS);
-#else
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
   // ESP32-S3: SCL -> 12, SDA -> 11
   const int LCD_SCK = 12, LCD_MOSI = 11, LCD_CS = 10, LCD_DC = 13, LCD_RST = 14;
+  Arduino_DataBus *bus = new Arduino_ESP32SPI(LCD_DC, LCD_CS, LCD_SCK, LCD_MOSI, GFX_NOT_DEFINED);
+#else
+  // ESP32 DevKit (VSPI hardware pins): SCL -> GPIO18, SDA -> GPIO23
+  const int LCD_SCK = 18, LCD_MOSI = 23, LCD_CS = 5, LCD_DC = 4, LCD_RST = 22;
   Arduino_DataBus *bus = new Arduino_ESP32SPI(LCD_DC, LCD_CS, LCD_SCK, LCD_MOSI, GFX_NOT_DEFINED);
 #endif
 const bool LCD_IPS = true;   // colours look inverted? set to false

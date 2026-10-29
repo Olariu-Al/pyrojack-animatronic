@@ -1,7 +1,8 @@
 // TEST 2 - SERVOS ONLY: MG995 sweep, MG90S lock/open, then the scare motion, repeating every 15 s
 // Run this with the servo horns OFF, or before the plunger is fitted:
 // the 0 -> 180 sweep would release the plunger and fire the flame.
-// Works on ESP8266 (ESP-12E / NodeMCU) and ESP32-S3 - just pick the board in Tools > Board.
+// Works on ESP32 DevKit (ESP32-WROOM-32, board "ESP32 Dev Module"), ESP8266 (NodeMCU) and ESP32-S3 -
+// just pick the board in Tools > Board.
 // ESP32 needs the "ESP32Servo" library; the ESP8266 uses its built-in Servo library.
 
 // ---------------- servo + buzzer pins ----------------
@@ -10,9 +11,13 @@
   const int PIN_MG995 = 12;  // D6
   const int PIN_MG90S = 2;   // D4  (also the on-board LED - it will flicker, that's fine)
   const int PIN_BUZZ  = 16;  // D0
-#else
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
   #include <ESP32Servo.h>
   const int PIN_MG995 = 17, PIN_MG90S = 18, PIN_BUZZ = 40;
+#else
+  // ESP32 DevKit
+  #include <ESP32Servo.h>
+  const int PIN_MG995 = 26, PIN_MG90S = 27, PIN_BUZZ = 25;
 #endif
 
 // ---------------- calibration (from the helper sketch) ----------------

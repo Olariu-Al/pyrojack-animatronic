@@ -1,6 +1,7 @@
 // TEST 3 - LCD + BOTH SERVOS: scare cycle every 10 s while the eye animates non-stop
 // Run with the horns off or the plunger out first: step 4 releases the plunger every cycle.
-// Works on ESP8266 (ESP-12E / NodeMCU) and ESP32-S3 - just pick the board in Tools > Board.
+// Works on ESP32 DevKit (ESP32-WROOM-32, board "ESP32 Dev Module"), ESP8266 (NodeMCU) and ESP32-S3 -
+// just pick the board in Tools > Board.
 // Libraries: "GFX Library for Arduino" (moononournation); ESP32 also needs "ESP32Servo".
 
 #include <Arduino_GFX_Library.h>
@@ -12,9 +13,13 @@
   const int LCD_CS = 15;   // D8
   const int LCD_RST = 5;   // D1
   Arduino_DataBus *bus = new Arduino_ESP8266SPI(LCD_DC, LCD_CS);
-#else
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
   // ESP32-S3: SCL -> 12, SDA -> 11
   const int LCD_SCK = 12, LCD_MOSI = 11, LCD_CS = 10, LCD_DC = 13, LCD_RST = 14;
+  Arduino_DataBus *bus = new Arduino_ESP32SPI(LCD_DC, LCD_CS, LCD_SCK, LCD_MOSI, GFX_NOT_DEFINED);
+#else
+  // ESP32 DevKit (VSPI hardware pins): SCL -> GPIO18, SDA -> GPIO23
+  const int LCD_SCK = 18, LCD_MOSI = 23, LCD_CS = 5, LCD_DC = 4, LCD_RST = 22;
   Arduino_DataBus *bus = new Arduino_ESP32SPI(LCD_DC, LCD_CS, LCD_SCK, LCD_MOSI, GFX_NOT_DEFINED);
 #endif
 const bool LCD_IPS = true;   // colours look inverted? set to false
@@ -26,9 +31,13 @@ Arduino_GFX *gfx = new Arduino_GC9A01(bus, LCD_RST, 0 /*rotation*/, LCD_IPS);
   const int PIN_MG995 = 12;  // D6
   const int PIN_MG90S = 2;   // D4  (also the on-board LED - it will flicker, that's fine)
   const int PIN_BUZZ  = 16;  // D0
-#else
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
   #include <ESP32Servo.h>
   const int PIN_MG995 = 17, PIN_MG90S = 18, PIN_BUZZ = 40;
+#else
+  // ESP32 DevKit
+  #include <ESP32Servo.h>
+  const int PIN_MG995 = 26, PIN_MG90S = 27, PIN_BUZZ = 25;
 #endif
 
 // ---------------- calibration (from the helper sketch) ----------------
@@ -36,6 +45,9 @@ const bool  REVERSED = false;   // MG995 direction
 const float TRIM     = 0;       // MG995 zero trim, degrees
 const int   LOCK_DEG = 45;      // MG90S deadbolt locked
 const int   OPEN_DEG = 135;     // MG90S deadbolt open
+
+// declared before any function so the auto-generated prototypes (PlatformIO / Arduino) can see it
+enum Phase { IDLE, FIRE, COCK, HOLD, LOCK, RELEASE, RESETTING };
 
 Servo cock, latch;
 float cockPos = 0;
@@ -121,7 +133,6 @@ bool cockStep(uint32_t now) {
   return false;
 }
 
-enum Phase { IDLE, FIRE, COCK, HOLD, LOCK, RELEASE, RESETTING };
 Phase phase = IDLE;
 uint32_t cycleStart = 0, phaseStart = 0, arrivedAt = 0;
 const char *PHASE_NAMES[] = { "IDLE", "FIRE", "COCK", "HOLD", "LOCK", "RELEASE", "RESET" };
