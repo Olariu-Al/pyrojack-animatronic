@@ -1,14 +1,14 @@
-// TEST 5 - ACCELEROMETER ONLY: checks the MPU6050 and tunes the push detection used by pumpkin_firmware
+// TEST 5 - ACCELEROMETER ONLY: checks the ADXL345 and tunes the push detection used by pumpkin_firmware
 // Board: ESP32 DevKit (ESP32-WROOM-32, "ESP32 Dev Module"). PlatformIO: env:accel_test. No extra libraries.
-// Also works with an MPU6500 / MPU9250 (same registers).
 //
-// Wiring: MPU6050 VCC -> 3V3, GND -> GND, SDA -> GPIO21, SCL -> GPIO22   (AD0 and INT not connected)
+// Wiring: ADXL345 VCC -> 3V3, GND -> GND, SDA -> GPIO21, SCL -> GPIO22, CS -> 3V3 (selects I2C)
+//         SDO -> GND gives address 0x53, SDO -> 3V3 gives 0x1D (both are tried). INT1 / INT2 not connected.
 //
 // What you should see in the Serial Monitor (115200):
 //   at rest:   total ~1.00 g, motion below ~0.03 g, state ARMED
 //   push head: ">>> PUSH #n" exactly once per push, even while the head keeps wobbling on the spring
 // Commands (type, then Enter):
-//   t<g>   push threshold, e.g. t0.3          q<g>   "standing still" threshold, e.g. q0.05
+//   t<g>   push threshold, e.g. t1.3         q<g>   "standing still" threshold, e.g. q0.05
 //   c<ms>  minimum time between pushes        s<ms>  how long it must be still before the next push counts
 //   l      live readings on / off             r      reset the push counter
 //   p      print the settings to copy into pumpkin_firmware
@@ -17,67 +17,70 @@
 
 const int I2C_SDA = 21, I2C_SCL = 22;    // standard ESP32 I2C pins
 
-// ---------------- push detection (same code as pumpkin_firmware) ----------------
-float PUSH_G = 0.25f, QUIET_G = 0.06f;          // motion (g) that counts as a push / as standing still
+// ---------------- push detection ----------------
+float PUSH_G = 1.3f, QUIET_G = 0.06f;           // total acceleration (g) that counts as a push / motion (g) that counts as standing still
 uint32_t COOLDOWN_MS = 1500, SETTLE_MS = 400;   // ignore the spring rebound after a push
 
 float grav[3];                 // slow average of the readings = gravity in sensor axes
 bool armed = false;
 uint32_t lastPush = 0, quietSince = 0;
 
-// true once per push. motion = acceleration with gravity removed, in g (works in any mounting orientation)
+// true once per push: total acceleration (gravity included, ~1.00 g at rest) goes over PUSH_G.
+// motion = acceleration with gravity removed, in g - only used to tell when the head has stopped wobbling
 bool detectPush(const float a[3], uint32_t now, float &motion) {
-  float m2 = 0;
+  float m2 = 0, t2 = 0;
   for (int i = 0; i < 3; i++) {
     grav[i] += (a[i] - grav[i]) * 0.006f;       // ~0.8 s time constant at 200 Hz
     float d = a[i] - grav[i];
     m2 += d * d;
+    t2 += a[i] * a[i];
   }
   motion = sqrtf(m2);
+  float total = sqrtf(t2);
   if (motion > QUIET_G) quietSince = now;
   if (!armed) {
     if (now - lastPush > COOLDOWN_MS && now - quietSince > SETTLE_MS) armed = true;
     return false;
   }
-  if (motion > PUSH_G) { armed = false; lastPush = now; return true; }
+  if (total > PUSH_G) { armed = false; lastPush = now; return true; }
   return false;
 }
 
-// ---------------- MPU6050 ----------------
-uint8_t mpuAddr = 0, whoAmI = 0;
+// ---------------- ADXL345 ----------------
+uint8_t adxlAddr = 0, devId = 0;
 
-bool mpuWrite(uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(mpuAddr); Wire.write(reg); Wire.write(val);
+bool adxlWrite(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(adxlAddr); Wire.write(reg); Wire.write(val);
   return Wire.endTransmission() == 0;
 }
 
-uint8_t mpuRead8(uint8_t reg) {
-  Wire.beginTransmission(mpuAddr); Wire.write(reg);
-  if (Wire.endTransmission(false) != 0 || Wire.requestFrom(mpuAddr, (uint8_t)1) != 1) return 0;
+uint8_t adxlRead8(uint8_t reg) {
+  Wire.beginTransmission(adxlAddr); Wire.write(reg);
+  if (Wire.endTransmission(false) != 0 || Wire.requestFrom(adxlAddr, (uint8_t)1) != 1) return 0;
   return Wire.read();
 }
 
-bool mpuBegin() {
-  const uint8_t addrs[] = { 0x68, 0x69 };
-  mpuAddr = 0;
-  for (uint8_t a : addrs) { Wire.beginTransmission(a); if (Wire.endTransmission() == 0) { mpuAddr = a; break; } }
-  if (!mpuAddr) return false;
-  whoAmI = mpuRead8(0x75);
-  mpuWrite(0x6B, 0x80); delay(100);              // reset
-  mpuWrite(0x6B, 0x01);                          // wake up, gyro clock
-  mpuWrite(0x1A, 0x03);                          // 44 Hz low-pass
-  mpuWrite(0x19, 4);                             // 200 samples/s
-  mpuWrite(0x1C, 0x08);                          // +-4 g
-  if (whoAmI != 0x68) mpuWrite(0x1D, 0x03);      // MPU6500/9250: accel low-pass is a separate register
+bool adxlBegin() {
+  const uint8_t addrs[] = { 0x53, 0x1D };
+  adxlAddr = 0;
+  for (uint8_t a : addrs) { Wire.beginTransmission(a); if (Wire.endTransmission() == 0) { adxlAddr = a; break; } }
+  if (!adxlAddr) return false;
+  devId = adxlRead8(0x00);                       // DEVID, 0xE5 on a genuine ADXL345
+  adxlWrite(0x2D, 0x00);                         // POWER_CTL: standby while configuring
+  adxlWrite(0x2C, 0x0B);                         // BW_RATE: 200 samples/s (100 Hz bandwidth)
+  adxlWrite(0x31, 0x09);                         // DATA_FORMAT: full resolution, +-4 g (3.9 mg/LSB)
+  adxlWrite(0x38, 0x00);                         // FIFO_CTL: bypass
+  adxlWrite(0x2D, 0x08);                         // POWER_CTL: measure
+  delay(10);
   return true;
 }
 
-bool mpuRead(float a[3]) {                       // acceleration in g
-  Wire.beginTransmission(mpuAddr); Wire.write(0x3B);
-  if (Wire.endTransmission(false) != 0 || Wire.requestFrom(mpuAddr, (uint8_t)6) != 6) return false;
+bool adxlRead(float a[3]) {                      // acceleration in g
+  Wire.beginTransmission(adxlAddr); Wire.write(0x32);   // DATAX0..DATAZ1, little-endian
+  if (Wire.endTransmission(false) != 0 || Wire.requestFrom(adxlAddr, (uint8_t)6) != 6) return false;
   for (int i = 0; i < 3; i++) {
-    int hi = Wire.read(), lo = Wire.read();
-    a[i] = (int16_t)((hi << 8) | lo) / 8192.0f;
+    int lo = Wire.read(), hi = Wire.read();
+    a[i] = (int16_t)((hi << 8) | lo) * 0.0039f;
   }
   return true;
 }
@@ -123,11 +126,11 @@ void command(String in) {
 }
 
 bool startSensor() {
-  if (!mpuBegin()) return false;
-  Serial.printf("Accelerometer found at 0x%02X, WHO_AM_I = 0x%02X", mpuAddr, whoAmI);
-  Serial.println(whoAmI == 0x68 ? " (MPU6050)" : whoAmI == 0x70 ? " (MPU6500)" : whoAmI == 0x71 || whoAmI == 0x73 ? " (MPU9250)" : " (unknown clone - should still work)");
+  if (!adxlBegin()) return false;
+  Serial.printf("Accelerometer found at 0x%02X, DEVID = 0x%02X", adxlAddr, devId);
+  Serial.println(devId == 0xE5 ? " (ADXL345)" : " (unexpected ID - wrong chip or clone?)");
   float a[3];
-  if (!mpuRead(a)) return false;
+  if (!adxlRead(a)) return false;
   for (int i = 0; i < 3; i++) grav[i] = a[i];
   armed = false; quietSince = millis();
   nextSample = micros();
@@ -141,7 +144,7 @@ void setup() {
   Serial.println("Accelerometer test");
   Wire.begin(I2C_SDA, I2C_SCL, 400000);
   scanBus();
-  if (!startSensor()) Serial.println("No accelerometer at 0x68 / 0x69 - retrying every 2 s");
+  if (!startSensor()) Serial.println("No accelerometer at 0x53 / 0x1D - retrying every 2 s");
   printSettings();
 }
 
@@ -153,7 +156,7 @@ void loop() {
   }
 
   uint32_t now = millis();
-  if (!mpuAddr) {
+  if (!adxlAddr) {
     if (now >= nextRetry) {
       nextRetry = now + 2000;
       if (!startSensor()) { Serial.print("Still no accelerometer. "); scanBus(); }
@@ -166,8 +169,8 @@ void loop() {
   if ((int32_t)(micros() - nextSample) > 20000) nextSample = micros();   // fell behind, don't burst
 
   float a[3], motion;
-  if (!mpuRead(a)) { Serial.println("Read failed - sensor disconnected?"); mpuAddr = 0; return; }
-  if (detectPush(a, now, motion)) { pushes++; Serial.printf(">>> PUSH #%lu  (motion %.2f g)\n", (unsigned long)pushes, motion); }
+  if (!adxlRead(a)) { Serial.println("Read failed - sensor disconnected?"); adxlAddr = 0; return; }
+  if (detectPush(a, now, motion)) { pushes++; Serial.printf(">>> PUSH #%lu  (total %.2f g)\n", (unsigned long)pushes, sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])); }
   peak = fmaxf(peak, motion);
 
   if (live && now >= nextPrint) {
